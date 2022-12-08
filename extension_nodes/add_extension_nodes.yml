@@ -10,18 +10,20 @@
     asg_min_size: 1
     asg_max_size: 1
   tasks:
-    - name: install curl
-      ansible.builtin.dnf:
-        name: curl
-        state: latest
-    - name: install unzip
-      ansible.builtin.dnf:
-        name: unzip
-        state: latest
-    - name: install jq
-      ansible.builtin.dnf:
-        name: jq
-        state: latest
+    - name: install deps
+      command: "microdnf -y install curl unzip jq"
+    # - name: install curl
+    #   ansible.builtin.dnf:
+    #     name: curl
+    #     state: latest
+    # - name: install unzip
+    #   ansible.builtin.dnf:
+    #     name: unzip
+    #     state: latest
+    # - name: install jq
+    #   ansible.builtin.dnf:
+    #     name: jq
+    #     state: latest
     - name: install aws cli
       shell: |
         curl https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o awscliv2.zip
