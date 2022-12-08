@@ -12,18 +12,6 @@
   tasks:
     - name: install deps
       command: "microdnf -y install curl unzip jq"
-    # - name: install curl
-    #   ansible.builtin.dnf:
-    #     name: curl
-    #     state: latest
-    # - name: install unzip
-    #   ansible.builtin.dnf:
-    #     name: unzip
-    #     state: latest
-    # - name: install jq
-    #   ansible.builtin.dnf:
-    #     name: jq
-    #     state: latest
     - name: install aws cli
       shell: |
         curl https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o awscliv2.zip
@@ -32,8 +20,8 @@
         rm -rf aws/
         rm awscliv2.zip
 
-        aws configure set aws_access_key_id {{ AWS_ACCESS_KEY_ID }}
-        aws configure set aws_secret_access_key {{ AWS_SECRET_ACCESS_KEY }}
+        aws configure set aws_access_key_id {{ lookup("env", "AWS_ACCESS_KEY_ID") }}
+        aws configure set aws_secret_access_key {{ lookup("env", "AWS_SECRET_ACCESS_KEY") }}
     - name: check stack status
       shell: |
         _STACK_INFO=$(aws cloudformation describe-stacks --stack-name {{ foundation_stack_name }})
