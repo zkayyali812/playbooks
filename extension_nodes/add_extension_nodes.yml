@@ -1,0 +1,102 @@
+- name: Deploy extension nodes
+  hosts: all
+  # connection: local
+  gather_facts: true
+  vars:
+    foundation_stack_name: ZK-M4
+    launch_template_name: extension-group-template
+    autoscaling_group_name: extension-group-asg
+    instance_type: m5.large
+    asg_min_size: 1
+    asg_max_size: 1
+  tasks:
+    - name: install deps
+      command: "dnf -y install curl unzip jq"
+    - name: install aws cli
+      shell: |
+        curl https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o awscliv2.zip
+        unzip awscliv2.zip
+        ./aws/install
+        rm -rf aws/
+        rm awscliv2.zip
+
+        aws configure set aws_access_key_id {{ aws_access_key_id }}
+        aws configure set aws_secret_access_key {{ aws_secret_access_key }}
+    - name: check stack status
+      shell: |
+        _STACK_INFO=$(aws cloudformation describe-stacks --stack-name {{ foundation_stack_name }})
+        echo "${_STACK_INFO}" | jq -r '.Stacks[0].StackStatus'
+      register: checkExists
+      failed_when:
+        - checkExists.stdout != "CREATE_COMPLETE"
+        - checkExists.stdout != "UPDATE_COMPLETE"
+        - checkExists.stdout != "ROLLBACK_COMPLETE"
+    - name: check if launch template exists
+      shell: |
+        aws ec2 describe-launch-templates --launch-template-names {{ launch_template_name }}
+      register: checkIfLaunchTemplateExists
+      # ignore_errors: True
+    - name: create launch template
+      when: '"InvalidLaunchTemplateName.NotFoundException" in checkIfLaunchTemplateExists.stderr'
+      shell: |
+        _LAUNCH_CONFIGURATION_NAME=$(aws cloudformation describe-stack-resources --stack-name {{ foundation_stack_name }} | jq -r '.StackResources[] | select(.ResourceType|startswith("AWS::AutoScaling::LaunchConfiguration")) | .PhysicalResourceId' | grep 'controller')
+        _LAUNCH_CONFIG=$(aws autoscaling describe-launch-configurations --launch-configuration-names ${_LAUNCH_CONFIGURATION_NAME} --query 'LaunchConfigurations[0]')
+        IMAGE_ID=$(echo "${_LAUNCH_CONFIG}" | jq -r '.ImageId')
+        KEY_NAME=$(echo "${_LAUNCH_CONFIG}" | jq -r '.KeyName')
+        SECURITY_GROUPS=$(echo ${_LAUNCH_CONFIG} | jq -r '.SecurityGroups')
+        _SECURITY_GROUPS=""
+        for security_group in $(echo "${SECURITY_GROUPS}" | jq -r '.[]' -); do
+            _SECURITY_GROUPS="${_SECURITY_GROUPS}\"${security_group}\", "
+        done
+        _SECURITY_GROUPS=${_SECURITY_GROUPS::-2}
+        # INSTANCE_TYPE=$(echo "${_LAUNCH_CONFIG}" | jq -r '.InstanceType')
+        USER_DATA=$(echo "${_LAUNCH_CONFIG}" | jq -r '.UserData')
+        BLOCK_DEVICE_MAPPINGS=$(echo "${_LAUNCH_CONFIG}" | jq -r '.BlockDeviceMappings')
+        IAM_INSTANCE_PROFILE=$(echo "${_LAUNCH_CONFIG}" | jq -r '.IamInstanceProfile')
+        EBS_OPTIMIZED=$(echo "${_LAUNCH_CONFIG}" | jq -r '.EbsOptimized')
+        aws ec2 create-launch-template --launch-template-name {{ launch_template_name }} --launch-template-data '{"ImageId": "'$IMAGE_ID'", "KeyName": "'$KEY_NAME'", "SecurityGroupIds": ['"$_SECURITY_GROUPS"'], "InstanceType": "'{{ instance_type }}'", "UserData": "'$USER_DATA'", "BlockDeviceMappings": '"$BLOCK_DEVICE_MAPPINGS"', "IamInstanceProfile": {"Name": "'$IAM_INSTANCE_PROFILE'"}}'
+      register: launchTemplate
+      notify:
+        - Create launch template version
+    - name: create launch template
+      failed_when: '"InvalidLaunchTemplateName.NotFoundException" not in checkIfLaunchTemplateExists.stderr'
+      shell: |
+        echo "Launch template already exists. Either delete existing launch template, or provide a new name."
+      register: launchTemplate
+  handlers:
+    - name: Create launch template version
+      shell: |
+        _LAUNCH_CONFIGURATION_NAME=$(aws cloudformation describe-stack-resources --stack-name {{ foundation_stack_name }} | jq -r '.StackResources[] | select(.ResourceType=="AWS::AutoScaling::LaunchConfiguration") | .PhysicalResourceId' | grep 'controller')
+        _LAUNCH_CONFIG=$(aws autoscaling describe-launch-configurations --launch-configuration-names ${_LAUNCH_CONFIGURATION_NAME} --query 'LaunchConfigurations[0]')
+        IMAGE_ID=$(echo "${_LAUNCH_CONFIG}" | jq -r '.ImageId')
+        IMAGE_NAME=$(aws ec2 describe-images --image-ids ${IMAGE_ID} --query 'Images[0].Name')
+        EXTENSION_NODE_IMAGE_NAME=$(echo $IMAGE_NAME | cut -d "_" -f -1)-EXT_$(echo $IMAGE_NAME | cut -d "_" -f 2-)
+        EXTENSION_NODE_IMAGE_NAME=$(echo $EXTENSION_NODE_IMAGE_NAME | sed 's/GP2.*/GP2/' - | tr -d '"')
+        EXTENSION_NODE_IMAGE_AMI=$(aws ec2 describe-images --filters "Name=name,Values=${EXTENSION_NODE_IMAGE_NAME}" --query 'Images[0].ImageId' | tr -d '"')
+        
+        LAUNCH_TEMPLATE_DATA=$(aws ec2 describe-launch-template-versions --launch-template-name {{ launch_template_name }} --query 'LaunchTemplateVersions[0].LaunchTemplateData')
+        LAUNCH_TEMPLATE_DATA=$(echo $LAUNCH_TEMPLATE_DATA | jq -r '.ImageId = "'$EXTENSION_NODE_IMAGE_AMI'"' -)
+        LAUNCH_TEMPLATE_DATA=$(echo $LAUNCH_TEMPLATE_DATA | jq -r '.InstanceType = "'{{ instance_type }}'"' -)
+        LAUNCH_TEMPLATE_DATA=$(echo $LAUNCH_TEMPLATE_DATA | jq -r -c)
+
+        echo $LAUNCH_TEMPLATE_DATA
+        aws ec2 create-launch-template-version --launch-template-name {{ launch_template_name }} --launch-template-data $LAUNCH_TEMPLATE_DATA
+      register: launchTemplateVersion
+      notify:
+        - Create extension autoscaling group
+    - name: Create extension autoscaling group
+      shell: |
+        _LAUNCH_TEMPLATES=$(aws ec2 describe-launch-template-versions --launch-template-name {{ launch_template_name }} --query 'LaunchTemplateVersions')
+        _LATEST_TEMPLATE=$(echo $_LAUNCH_TEMPLATES | jq 'map(select(.VersionNumber)) | max' -)
+
+        _SUBNET_IDS=$(aws cloudformation describe-stack-resources --stack-name {{ foundation_stack_name }} | jq -r '.StackResources[] | select(.ResourceType=="AWS::EC2::Subnet") | .PhysicalResourceId' | tr '\n' ',')
+        _SUBNET_IDS=${_SUBNET_IDS::-1}
+        _LAUNCH_TEMPLATE_ID=$(echo "$_LATEST_TEMPLATE" | jq -r '.LaunchTemplateId')
+        _LAUNCH_TEMPLATE_NAME=$(echo "$_LATEST_TEMPLATE" | jq -r '.LaunchTemplateName')
+        _LAUNCH_TEMPLATE_VERSION=$(echo "$_LATEST_TEMPLATE" | jq -r '.VersionNumber')
+
+        LAUNCH_TEMPLATE="LaunchTemplateId=${_LAUNCH_TEMPLATE_ID},Version=${_LAUNCH_TEMPLATE_VERSION}"
+        aws autoscaling create-auto-scaling-group --auto-scaling-group-name {{ autoscaling_group_name }} --launch-template "$LAUNCH_TEMPLATE" --min-size {{ asg_min_size }} --max-size {{ asg_max_size }} --vpc-zone-identifier "$_SUBNET_IDS"
+      register: extensionAutoscaleGroup
+      notify: debug
+
