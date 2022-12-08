@@ -35,7 +35,7 @@
       shell: |
         aws ec2 describe-launch-templates --launch-template-names {{ launch_template_name }}
       register: checkIfLaunchTemplateExists
-      # ignore_errors: True
+      ignore_errors: True
     - name: create launch template
       when: '"InvalidLaunchTemplateName.NotFoundException" in checkIfLaunchTemplateExists.stderr'
       shell: |
