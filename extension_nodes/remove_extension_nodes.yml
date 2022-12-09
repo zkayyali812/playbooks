@@ -42,7 +42,6 @@
             _INSTANCEIDs="${_INSTANCEIDs} ${instanceID}"
           fi
         done
-        echo $_INSTANCEIDs
         aws ec2 terminate-instances --instance-ids "${_INSTANCEIDs}"
         aws ec2 wait instance-terminated --instance-ids "${_INSTANCEIDs}"
         aws autoscaling delete-auto-scaling-group --auto-scaling-group-name  {{ autoscaling_group_name }} --force-delete || true
@@ -52,3 +51,4 @@
       shell: |
         aws ec2 delete-launch-template --launch-template-name {{ launch_template_name }} || true
       register: launchTemplate
+
