@@ -34,13 +34,7 @@
         - checkExists.stdout != "CREATE_COMPLETE"
         - checkExists.stdout != "UPDATE_COMPLETE"
         - checkExists.stdout != "ROLLBACK_COMPLETE"
-    - name: check if launch template exists
-      shell: |
-        aws ec2 describe-launch-templates --launch-template-names {{ launch_template_name }}
-      register: checkIfLaunchTemplateExists
-      ignore_errors: True
     - name: create launch template
-      when: '"InvalidLaunchTemplateName.NotFoundException" in checkIfLaunchTemplateExists.stderr'
       shell: |
         _LAUNCH_CONFIGURATION_NAME=$(aws cloudformation describe-stack-resources --stack-name {{ foundation_stack_name }} | jq -r '.StackResources[] | select(.ResourceType|startswith("AWS::AutoScaling::LaunchConfiguration")) | .PhysicalResourceId' | grep 'controller')
         _LAUNCH_CONFIG=$(aws autoscaling describe-launch-configurations --launch-configuration-names ${_LAUNCH_CONFIGURATION_NAME} --query 'LaunchConfigurations[0]')
@@ -67,17 +61,12 @@
         BLOCK_DEVICE_MAPPINGS=$(echo "${_LAUNCH_CONFIG}" | jq -r '.BlockDeviceMappings')
         IAM_INSTANCE_PROFILE=$(echo "${_LAUNCH_CONFIG}" | jq -r '.IamInstanceProfile')
         EBS_OPTIMIZED=$(echo "${_LAUNCH_CONFIG}" | jq -r '.EbsOptimized')
-        
+
         aws ec2 create-launch-template --launch-template-name {{ launch_template_name }} --launch-template-data '{"ImageId": "'$EXTENSION_NODE_IMAGE_AMI'", "KeyName": "'$KEY_NAME'", "SecurityGroupIds": ['"$_SECURITY_GROUPS"'], "InstanceType": "'{{ instance_type }}'", "UserData": "'$USER_DATA'", "BlockDeviceMappings": '"$BLOCK_DEVICE_MAPPINGS"', "IamInstanceProfile": {"Name": "'$IAM_INSTANCE_PROFILE'"}}'
       register: launchTemplate
       failed_when: '"Extension Node AMI not found" in launchTemplate.stdout'
       notify:
         - Create extension autoscaling group
-    - name: create launch template
-      failed_when: '"InvalidLaunchTemplateName.NotFoundException" not in checkIfLaunchTemplateExists.stderr'
-      shell: |
-        echo "Launch template already exists. Either delete existing launch template, or provide a new name."
-      register: launchTemplate
   handlers:
     - name: Create extension autoscaling group
       shell: |
