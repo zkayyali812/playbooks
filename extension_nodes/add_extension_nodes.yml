@@ -1,17 +1,19 @@
 - name: Deploy extension nodes
   hosts: all
-  # connection: local
+#   connection: local
   gather_facts: true
   vars:
-    foundation_stack_name: ZK-M4
+    foundation_stack_name: ""
+    region: us-east-1
     launch_template_name: extension-group-template
     autoscaling_group_name: extension-group-asg
     instance_type: m5.large
     asg_min_size: 1
     asg_max_size: 1
+    asg_desired_capacity: 1
   tasks:
     - name: install deps
-      command: "dnf -y install curl unzip jq"
+      command: "microdnf -y install curl unzip jq"
     - name: install aws cli
       shell: |
         curl https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o awscliv2.zip
@@ -19,9 +21,10 @@
         ./aws/install
         rm -rf aws/
         rm awscliv2.zip
-
-        aws configure set aws_access_key_id {{ aws_access_key_id }}
-        aws configure set aws_secret_access_key {{ aws_secret_access_key }}
+        aws configure set aws_access_key_id {{ lookup("env", "AWS_ACCESS_KEY_ID") }}
+        aws configure set aws_secret_access_key {{ lookup("env", "AWS_SECRET_ACCESS_KEY") }}
+        aws configure set region {{ region }}
+      register: installAWS
     - name: check stack status
       shell: |
         _STACK_INFO=$(aws cloudformation describe-stacks --stack-name {{ foundation_stack_name }})
@@ -35,7 +38,7 @@
       shell: |
         aws ec2 describe-launch-templates --launch-template-names {{ launch_template_name }}
       register: checkIfLaunchTemplateExists
-      # ignore_errors: True
+      ignore_errors: True
     - name: create launch template
       when: '"InvalidLaunchTemplateName.NotFoundException" in checkIfLaunchTemplateExists.stderr'
       shell: |
@@ -49,7 +52,6 @@
             _SECURITY_GROUPS="${_SECURITY_GROUPS}\"${security_group}\", "
         done
         _SECURITY_GROUPS=${_SECURITY_GROUPS::-2}
-        # INSTANCE_TYPE=$(echo "${_LAUNCH_CONFIG}" | jq -r '.InstanceType')
         USER_DATA=$(echo "${_LAUNCH_CONFIG}" | jq -r '.UserData')
         BLOCK_DEVICE_MAPPINGS=$(echo "${_LAUNCH_CONFIG}" | jq -r '.BlockDeviceMappings')
         IAM_INSTANCE_PROFILE=$(echo "${_LAUNCH_CONFIG}" | jq -r '.IamInstanceProfile')
@@ -79,7 +81,6 @@
         LAUNCH_TEMPLATE_DATA=$(echo $LAUNCH_TEMPLATE_DATA | jq -r '.InstanceType = "'{{ instance_type }}'"' -)
         LAUNCH_TEMPLATE_DATA=$(echo $LAUNCH_TEMPLATE_DATA | jq -r -c)
 
-        echo $LAUNCH_TEMPLATE_DATA
         aws ec2 create-launch-template-version --launch-template-name {{ launch_template_name }} --launch-template-data $LAUNCH_TEMPLATE_DATA
       register: launchTemplateVersion
       notify:
@@ -96,7 +97,5 @@
         _LAUNCH_TEMPLATE_VERSION=$(echo "$_LATEST_TEMPLATE" | jq -r '.VersionNumber')
 
         LAUNCH_TEMPLATE="LaunchTemplateId=${_LAUNCH_TEMPLATE_ID},Version=${_LAUNCH_TEMPLATE_VERSION}"
-        aws autoscaling create-auto-scaling-group --auto-scaling-group-name {{ autoscaling_group_name }} --launch-template "$LAUNCH_TEMPLATE" --min-size {{ asg_min_size }} --max-size {{ asg_max_size }} --vpc-zone-identifier "$_SUBNET_IDS"
+        aws autoscaling create-auto-scaling-group --auto-scaling-group-name {{ autoscaling_group_name }} --launch-template "$LAUNCH_TEMPLATE" --min-size {{ asg_min_size }} --max-size {{ asg_max_size }} --desired-capacity {{ asg_desired_capacity }} --vpc-zone-identifier "$_SUBNET_IDS"
       register: extensionAutoscaleGroup
-      notify: debug
-

@@ -1,0 +1,54 @@
+- name: Remove extension nodes
+  hosts: all
+  # connection: local
+  gather_facts: true
+  vars:
+    foundation_stack_name: ""
+    region: us-east-1
+    launch_template_name: extension-group-template
+    autoscaling_group_name: extension-group-asg
+  tasks:
+    - name: install deps
+      command: "microdnf -y install curl unzip jq"
+    - name: install aws cli
+      shell: |
+        curl https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o awscliv2.zip
+        unzip awscliv2.zip
+        ./aws/install
+        rm -rf aws/
+        rm awscliv2.zip
+        aws configure set aws_access_key_id {{ lookup("env", "AWS_ACCESS_KEY_ID") }}
+        aws configure set aws_secret_access_key {{ lookup("env", "AWS_SECRET_ACCESS_KEY") }}
+        aws configure set region {{ region }}
+      register: installAWS
+    - name: check stack status
+      shell: |
+        _STACK_INFO=$(aws cloudformation describe-stacks --stack-name {{ foundation_stack_name }})
+        echo "${_STACK_INFO}" | jq -r '.Stacks[0].StackStatus'
+      register: checkExists
+      failed_when:
+        - checkExists.stdout != "CREATE_COMPLETE"
+        - checkExists.stdout != "UPDATE_COMPLETE"
+        - checkExists.stdout != "ROLLBACK_COMPLETE"
+    - name: Delete extension autoscaling group
+      shell: |
+        aws autoscaling suspend-processes --auto-scaling-group-name {{ autoscaling_group_name }}
+        INSTANCES=$(aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names {{ autoscaling_group_name }} --output json --query 'AutoScalingGroups[0].Instances')
+        _INSTANCEIDs=""
+        for instanceID in $(echo "$INSTANCES" | jq -r -c '.[].InstanceId' -); do
+          if [[ "$_INSTANCEIDs" == "" ]]; then
+            _INSTANCEIDs="${instanceID}"
+          else
+            _INSTANCEIDs="${_INSTANCEIDs} ${instanceID}"
+          fi
+        done
+        aws ec2 terminate-instances --instance-ids "${_INSTANCEIDs}"
+        aws ec2 wait instance-terminated --instance-ids "${_INSTANCEIDs}"
+        aws autoscaling delete-auto-scaling-group --auto-scaling-group-name  {{ autoscaling_group_name }} --force-delete || true
+      register: extensionAutoscaleGroup
+    - debug: msg="{{ extensionAutoscaleGroup.stdout_lines }}"
+    - name: Delete launch template
+      shell: |
+        aws ec2 delete-launch-template --launch-template-name {{ launch_template_name }} || true
+      register: launchTemplate
+
