@@ -1,6 +1,6 @@
 - name: Deploy extension nodes
   hosts: all
-#   connection: local
+  # connection: local
   gather_facts: true
   vars:
     foundation_stack_name: ""
@@ -44,7 +44,17 @@
       shell: |
         _LAUNCH_CONFIGURATION_NAME=$(aws cloudformation describe-stack-resources --stack-name {{ foundation_stack_name }} | jq -r '.StackResources[] | select(.ResourceType|startswith("AWS::AutoScaling::LaunchConfiguration")) | .PhysicalResourceId' | grep 'controller')
         _LAUNCH_CONFIG=$(aws autoscaling describe-launch-configurations --launch-configuration-names ${_LAUNCH_CONFIGURATION_NAME} --query 'LaunchConfigurations[0]')
+        
         IMAGE_ID=$(echo "${_LAUNCH_CONFIG}" | jq -r '.ImageId')
+        IMAGE_NAME=$(aws ec2 describe-images --image-ids ${IMAGE_ID} --query 'Images[0].Name')
+        EXTENSION_NODE_IMAGE_NAME=$(echo $IMAGE_NAME | cut -d "_" -f -1)-EXT_$(echo $IMAGE_NAME | cut -d "_" -f 2-) # Add EXT
+        EXTENSION_NODE_IMAGE_NAME=$(echo $EXTENSION_NODE_IMAGE_NAME | sed 's/GP2.*/GP2/' - | tr -d '"')             # Remove suffix
+        EXTENSION_NODE_IMAGE_AMI=$(aws ec2 describe-images --filters "Name=name,Values=${EXTENSION_NODE_IMAGE_NAME}" --query 'Images[0].ImageId' | tr -d '"')
+        if [[ "$EXTENSION_NODE_IMAGE_AMI" == "null" ]]; then
+          echo "Extension Node AMI not found. Ensure you are using a published version of AAP"
+          exit 1
+        fi
+
         KEY_NAME=$(echo "${_LAUNCH_CONFIG}" | jq -r '.KeyName')
         SECURITY_GROUPS=$(echo ${_LAUNCH_CONFIG} | jq -r '.SecurityGroups')
         _SECURITY_GROUPS=""
@@ -52,43 +62,27 @@
             _SECURITY_GROUPS="${_SECURITY_GROUPS}\"${security_group}\", "
         done
         _SECURITY_GROUPS=${_SECURITY_GROUPS::-2}
+
         USER_DATA=$(echo "${_LAUNCH_CONFIG}" | jq -r '.UserData')
         BLOCK_DEVICE_MAPPINGS=$(echo "${_LAUNCH_CONFIG}" | jq -r '.BlockDeviceMappings')
         IAM_INSTANCE_PROFILE=$(echo "${_LAUNCH_CONFIG}" | jq -r '.IamInstanceProfile')
         EBS_OPTIMIZED=$(echo "${_LAUNCH_CONFIG}" | jq -r '.EbsOptimized')
-        aws ec2 create-launch-template --launch-template-name {{ launch_template_name }} --launch-template-data '{"ImageId": "'$IMAGE_ID'", "KeyName": "'$KEY_NAME'", "SecurityGroupIds": ['"$_SECURITY_GROUPS"'], "InstanceType": "'{{ instance_type }}'", "UserData": "'$USER_DATA'", "BlockDeviceMappings": '"$BLOCK_DEVICE_MAPPINGS"', "IamInstanceProfile": {"Name": "'$IAM_INSTANCE_PROFILE'"}}'
+        
+        aws ec2 create-launch-template --launch-template-name {{ launch_template_name }} --launch-template-data '{"ImageId": "'$EXTENSION_NODE_IMAGE_AMI'", "KeyName": "'$KEY_NAME'", "SecurityGroupIds": ['"$_SECURITY_GROUPS"'], "InstanceType": "'{{ instance_type }}'", "UserData": "'$USER_DATA'", "BlockDeviceMappings": '"$BLOCK_DEVICE_MAPPINGS"', "IamInstanceProfile": {"Name": "'$IAM_INSTANCE_PROFILE'"}}'
       register: launchTemplate
+      failed_when: '"Extension Node AMI not found" in launchTemplate.stdout'
       notify:
-        - Create launch template version
+        - Create extension autoscaling group
     - name: create launch template
       failed_when: '"InvalidLaunchTemplateName.NotFoundException" not in checkIfLaunchTemplateExists.stderr'
       shell: |
         echo "Launch template already exists. Either delete existing launch template, or provide a new name."
       register: launchTemplate
   handlers:
-    - name: Create launch template version
-      shell: |
-        _LAUNCH_CONFIGURATION_NAME=$(aws cloudformation describe-stack-resources --stack-name {{ foundation_stack_name }} | jq -r '.StackResources[] | select(.ResourceType=="AWS::AutoScaling::LaunchConfiguration") | .PhysicalResourceId' | grep 'controller')
-        _LAUNCH_CONFIG=$(aws autoscaling describe-launch-configurations --launch-configuration-names ${_LAUNCH_CONFIGURATION_NAME} --query 'LaunchConfigurations[0]')
-        IMAGE_ID=$(echo "${_LAUNCH_CONFIG}" | jq -r '.ImageId')
-        IMAGE_NAME=$(aws ec2 describe-images --image-ids ${IMAGE_ID} --query 'Images[0].Name')
-        EXTENSION_NODE_IMAGE_NAME=$(echo $IMAGE_NAME | cut -d "_" -f -1)-EXT_$(echo $IMAGE_NAME | cut -d "_" -f 2-)
-        EXTENSION_NODE_IMAGE_NAME=$(echo $EXTENSION_NODE_IMAGE_NAME | sed 's/GP2.*/GP2/' - | tr -d '"')
-        EXTENSION_NODE_IMAGE_AMI=$(aws ec2 describe-images --filters "Name=name,Values=${EXTENSION_NODE_IMAGE_NAME}" --query 'Images[0].ImageId' | tr -d '"')
-        
-        LAUNCH_TEMPLATE_DATA=$(aws ec2 describe-launch-template-versions --launch-template-name {{ launch_template_name }} --query 'LaunchTemplateVersions[0].LaunchTemplateData')
-        LAUNCH_TEMPLATE_DATA=$(echo $LAUNCH_TEMPLATE_DATA | jq -r '.ImageId = "'$EXTENSION_NODE_IMAGE_AMI'"' -)
-        LAUNCH_TEMPLATE_DATA=$(echo $LAUNCH_TEMPLATE_DATA | jq -r '.InstanceType = "'{{ instance_type }}'"' -)
-        LAUNCH_TEMPLATE_DATA=$(echo $LAUNCH_TEMPLATE_DATA | jq -r -c)
-
-        aws ec2 create-launch-template-version --launch-template-name {{ launch_template_name }} --launch-template-data $LAUNCH_TEMPLATE_DATA
-      register: launchTemplateVersion
-      notify:
-        - Create extension autoscaling group
     - name: Create extension autoscaling group
       shell: |
         _LAUNCH_TEMPLATES=$(aws ec2 describe-launch-template-versions --launch-template-name {{ launch_template_name }} --query 'LaunchTemplateVersions')
-        _LATEST_TEMPLATE=$(echo $_LAUNCH_TEMPLATES | jq 'map(select(.VersionNumber)) | max' -)
+        _LATEST_TEMPLATE=$(echo $_LAUNCH_TEMPLATES | jq 'map(select(.VersionNumber)) | max' -) # Select latest version
 
         _SUBNET_IDS=$(aws cloudformation describe-stack-resources --stack-name {{ foundation_stack_name }} | jq -r '.StackResources[] | select(.ResourceType=="AWS::EC2::Subnet") | .PhysicalResourceId' | tr '\n' ',')
         _SUBNET_IDS=${_SUBNET_IDS::-1}
