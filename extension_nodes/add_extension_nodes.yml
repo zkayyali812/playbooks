@@ -1,6 +1,6 @@
 - name: Deploy extension nodes
-  hosts: all
-  # connection: local
+  hosts: localhost
+  connection: local
   gather_facts: true
   vars:
     foundation_stack_name: ""
