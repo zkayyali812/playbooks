@@ -64,3 +64,18 @@ These playbooks require an active AAP on AWS foundation stack to be running. The
         ```
     8. Click `Save`
  
+## Running using Ansible Navigator
+
+To run these playbooks locally using ansible navigator, the following commands can be used as well. Be sure to set your AWS credentials via the environment variables below before running.
+
+### Running Add Extension Nodes playbook
+
+```bash
+ansible-navigator run playbooks/extension_nodes/add_extension_nodes.yml --set-environment-variable AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY -m stdout --playbook-artifact-enable false
+```
+
+### Running Remove Extension Nodes playbook
+```bash
+ansible-navigator run playbooks/extension_nodes/remove_extension_nodes.yml --set-environment-variable AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY -m stdout --playbook-artifact-enable false
+```
+
